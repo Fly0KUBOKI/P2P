@@ -14,12 +14,14 @@ static void ultrasonicTask(void* pvParameters);
 // ultrasonic timing defines (milliseconds)
 #define ULTRASONIC_MEASURE_WAIT_MS 70
 #define ULTRASONIC_INTERVAL_MS 30
+// set to 1 to enable ultrasonic task, 0 to disable
+#define ENABLE_ULTRASONIC 0
 
 // mutex to protect Serial access between tasks
 static SemaphoreHandle_t serialMutex = NULL;
 
 void setup() {
-  Serial.begin(921600);
+  Serial.begin(115200);
   while (!Serial) {
     delay(10);
   }
@@ -46,11 +48,17 @@ void setup() {
   if (coreCount > 1) {
     // デュアルコア: 明示的にコアにピン留め
   xTaskCreatePinnedToCore(udpTask, "udpTask", 4096, NULL, 2, NULL, 0);
+#if ENABLE_ULTRASONIC
   xTaskCreatePinnedToCore(ultrasonicTask, "ultraTask", 2048, NULL, 1, NULL, 1);
+#else
+
+#endif
   } else {
     // シングルコア環境でも動作するように通常タスクで生成
     xTaskCreate(udpTask, "udpTask", 4096, NULL, 2, NULL);
+#if ENABLE_ULTRASONIC
     xTaskCreate(ultrasonicTask, "ultraTask", 2048, NULL, 1, NULL);
+#endif
   }
 }
 
@@ -92,8 +100,13 @@ static void udpTask(void* pvParameters) {
       if (r <= 0) break;
       len += r;
       remaining -= r;
-
-      Serial.write(buf, r);
+      for (uint8_t i = 0; i < r; i++) {
+        // 受信データをそのままシリアルに出力
+        if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+          Serial.write(buf[i]);
+          xSemaphoreGive(serialMutex);
+        }
+      }
     }
 
     uint8_t status = 1;
@@ -154,8 +167,8 @@ static void ultrasonicTask(void* pvParameters) {
       reading |= low;
 
       if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        Serial.print(reading);
-        Serial.println("cm");
+        // Serial.print(reading);
+        // Serial.println("cm");
         xSemaphoreGive(serialMutex);
       }
     }
