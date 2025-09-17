@@ -21,7 +21,7 @@ static void ultrasonicTask(void* pvParameters);
 static SemaphoreHandle_t serialMutex = NULL;
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(921600);
   while (!Serial) {
     delay(10);
   }
@@ -110,11 +110,11 @@ static void udpTask(void* pvParameters) {
     }
 
     uint8_t status = 1;
-    if (len == packetSize) {
-      status = 0;
-    } else {
-      status = 1;
-    }
+    // if (len == packetSize) {
+    //   status = 0;
+    // } else {
+    //   status = 1;
+    // }
     // read optional status override from Serial if available
     if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
       if (Serial.available() > 0) {
@@ -124,9 +124,10 @@ static void udpTask(void* pvParameters) {
       xSemaphoreGive(serialMutex);
     }
 
-    WifiSoftAP::udp.beginPacket(remote, port);
-    WifiSoftAP::udp.write(&status, 1);
-    WifiSoftAP::udp.endPacket();
+  WifiSoftAP::udp.beginPacket(remote, port);
+  // send single byte as binary using the single-byte overload
+  WifiSoftAP::udp.write(status);
+  WifiSoftAP::udp.endPacket();
   }
 }
 
