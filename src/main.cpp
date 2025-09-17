@@ -77,7 +77,7 @@ static void udpTask(void* pvParameters) {
       Serial.write(buf, r);
     }
 
-    uint8_t status;
+    uint8_t status = 1;
     if (len == packetSize) {
       status = 0;
     } else {
