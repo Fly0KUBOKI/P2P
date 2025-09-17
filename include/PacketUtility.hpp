@@ -1,0 +1,15 @@
+#ifndef PACKET_UTILITY_HPP
+#define PACKET_UTILITY_HPP
+
+#include <cstdint>
+
+enum class PacketError : uint8_t {
+    SUCCESS = 0,
+    PACKET_OVERFLOW,
+    TYPE_MISMATCH,
+    PACKET_NOT_INITIALIZED,
+    PACKET_NOT_ENDED,
+    PACKET_ALREADY_RETRIEVED,
+};
+
+#endif // PACKET_UTILITY_HPP
