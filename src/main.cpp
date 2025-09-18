@@ -14,11 +14,17 @@ static void ultrasonicTask(void* pvParameters);
 // ultrasonic timing defines (milliseconds)
 #define ULTRASONIC_MEASURE_WAIT_MS 70
 #define ULTRASONIC_INTERVAL_MS 30
+// periodic broadcast interval (ms)
+#define BROADCAST_INTERVAL_MS 100
 // set to 1 to enable ultrasonic task, 0 to disable
 #define ENABLE_ULTRASONIC true
 
 // mutex to protect Serial access between tasks
 static SemaphoreHandle_t serialMutex = NULL;
+// latest ultrasonic reading (cm) published as a single uint8_t
+static volatile uint8_t ultrasonicValue = 0;
+// mutex to protect UDP send operations
+static SemaphoreHandle_t udpMutex = NULL;
 
 void setup() {
   Serial.begin(921600);
@@ -78,6 +84,23 @@ static void udpTask(void* pvParameters) {
     // 定期的なヘルスチェック
     WifiSoftAP::Tick();
 
+    // periodic broadcast even when no incoming packet
+    static unsigned long lastBroadcast = 0;
+    unsigned long now = millis();
+    if (now - lastBroadcast >= BROADCAST_INTERVAL_MS) {
+      lastBroadcast = now;
+      uint8_t status_b = 1; // default status for periodic broadcast
+      uint8_t pkt[2] = { status_b, ultrasonicValue };
+      //  Serial.print(ultrasonicValue);
+      //  Serial.println("cm");
+      if (udpMutex && xSemaphoreTake(udpMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        WifiSoftAP::udp.beginPacket(WifiSoftAP::broadcastIP, WifiSoftAP::udpPort);
+        WifiSoftAP::udp.write(pkt, 2);
+        WifiSoftAP::udp.endPacket();
+        xSemaphoreGive(udpMutex);
+      }
+    }
+
     int packetSize = WifiSoftAP::udp.parsePacket();
     if (packetSize <= 0) {
       vTaskDelay(pdMS_TO_TICKS(10));
@@ -124,10 +147,16 @@ static void udpTask(void* pvParameters) {
       xSemaphoreGive(serialMutex);
     }
 
-  WifiSoftAP::udp.beginPacket(remote, port);
-  // send single byte as binary using the single-byte overload
-  WifiSoftAP::udp.write(status);
-  WifiSoftAP::udp.endPacket();
+    if (udpMutex && xSemaphoreTake(udpMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      WifiSoftAP::udp.beginPacket(remote, port);
+      // send two bytes: [status, ultrasonicValue]
+      uint8_t packetOut[2];
+      packetOut[0] = status;
+      packetOut[1] = ultrasonicValue;
+      WifiSoftAP::udp.write(packetOut, 2);
+      WifiSoftAP::udp.endPacket();
+      xSemaphoreGive(udpMutex);
+    }
   }
 }
 
@@ -137,7 +166,7 @@ static void ultrasonicTask(void* pvParameters) {
   const uint8_t srf02_addr = 112; // 0x70
 
   if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-    Serial.println("ultrasonicTask started");
+    //Serial.println("ultrasonicTask started");
     xSemaphoreGive(serialMutex);
   }
 
@@ -167,9 +196,24 @@ static void ultrasonicTask(void* pvParameters) {
       int low = Wire.read();
       reading |= low;
 
+      // clamp reading to 0..255 and store as latest ultrasonicValue
+      if (reading < 0) reading = 0;
+      if (reading > 255) reading = 255;
+      ultrasonicValue = (uint8_t)reading;
+      // Serial.print("Ultrasonic: ");
+      // Serial.print(reading);
+      // Serial.println("cm");
+
+      // immediate send: status=0, ultrasonicValue
+      uint8_t immediatePkt[2] = { 0, ultrasonicValue };
+      if (udpMutex && xSemaphoreTake(udpMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        WifiSoftAP::udp.beginPacket(WifiSoftAP::broadcastIP, WifiSoftAP::udpPort);
+        WifiSoftAP::udp.write(immediatePkt, 2);
+        WifiSoftAP::udp.endPacket();
+        xSemaphoreGive(udpMutex);
+      }
+
       if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        Serial.print(reading);
-        Serial.println("cm");
         xSemaphoreGive(serialMutex);
       }
     }
