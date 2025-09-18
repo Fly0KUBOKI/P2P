@@ -15,7 +15,7 @@ static void ultrasonicTask(void* pvParameters);
 #define ULTRASONIC_MEASURE_WAIT_MS 70
 #define ULTRASONIC_INTERVAL_MS 30
 // set to 1 to enable ultrasonic task, 0 to disable
-#define ENABLE_ULTRASONIC 0
+#define ENABLE_ULTRASONIC true
 
 // mutex to protect Serial access between tasks
 static SemaphoreHandle_t serialMutex = NULL;
@@ -168,8 +168,8 @@ static void ultrasonicTask(void* pvParameters) {
       reading |= low;
 
       if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        // Serial.print(reading);
-        // Serial.println("cm");
+        Serial.print(reading);
+        Serial.println("cm");
         xSemaphoreGive(serialMutex);
       }
     }
