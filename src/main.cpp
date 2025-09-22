@@ -1,3 +1,4 @@
+
 #include <Arduino.h>
 #include "Wifi_SoftAP.hpp"
 
@@ -13,11 +14,9 @@ static void ultrasonicTask(void* pvParameters);
 
 // ultrasonic timing defines (milliseconds)
 #define ULTRASONIC_MEASURE_WAIT_MS 70
-#define ULTRASONIC_INTERVAL_MS 30
 // periodic broadcast interval (ms)
-#define BROADCAST_INTERVAL_MS 100
+#define BROADCAST_INTERVAL_MS 50
 // set to 1 to enable ultrasonic task, 0 to disable
-#define ENABLE_ULTRASONIC true
 
 // mutex to protect Serial access between tasks
 static SemaphoreHandle_t serialMutex = NULL;
@@ -39,10 +38,17 @@ void setup() {
     Serial.println("Warning: failed to create serial mutex");
   }
 
+  // create mutex for UDP protection between tasks
+  udpMutex = xSemaphoreCreateMutex();
+  if (udpMutex == NULL) {
+    Serial.println("Warning: failed to create udp mutex");
+  }
+
   WifiSoftAP::Setup();
 
   // I2C 初期化（SRF02用）
   Wire.begin();
+
 
   // コア数を判定してタスクを振り分ける。デュアルコア環境ではUDPをコア1、超音波をコア0に割り当てる。
   #if defined(portNUM_PROCESSORS)
@@ -54,17 +60,11 @@ void setup() {
   if (coreCount > 1) {
     // デュアルコア: 明示的にコアにピン留め
   xTaskCreatePinnedToCore(udpTask, "udpTask", 4096, NULL, 2, NULL, 0);
-#if ENABLE_ULTRASONIC
   xTaskCreatePinnedToCore(ultrasonicTask, "ultraTask", 2048, NULL, 1, NULL, 1);
-#else
-
-#endif
   } else {
     // シングルコア環境でも動作するように通常タスクで生成
     xTaskCreate(udpTask, "udpTask", 4096, NULL, 2, NULL);
-#if ENABLE_ULTRASONIC
     xTaskCreate(ultrasonicTask, "ultraTask", 2048, NULL, 1, NULL);
-#endif
   }
 }
 
@@ -94,6 +94,7 @@ static void udpTask(void* pvParameters) {
       //  Serial.print(ultrasonicValue);
       //  Serial.println("cm");
       if (udpMutex && xSemaphoreTake(udpMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+
         WifiSoftAP::udp.beginPacket(WifiSoftAP::broadcastIP, WifiSoftAP::udpPort);
         WifiSoftAP::udp.write(pkt, 2);
         WifiSoftAP::udp.endPacket();
@@ -110,6 +111,14 @@ static void udpTask(void* pvParameters) {
     IPAddress remote = WifiSoftAP::udp.remoteIP();
     uint16_t port = WifiSoftAP::udp.remotePort();
 
+    // 受信があればログ出力 (remote/port を取得してから表示)
+    if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+      Serial.print("Received packet size="); Serial.print(packetSize);
+      Serial.print(" from "); Serial.print(remote);
+      Serial.print(":"); Serial.println(port);
+      xSemaphoreGive(serialMutex);
+    }
+
     int len = 0;
     size_t remaining = packetSize;
     while (remaining > 0) {
@@ -123,21 +132,19 @@ static void udpTask(void* pvParameters) {
       if (r <= 0) break;
       len += r;
       remaining -= r;
-      for (uint8_t i = 0; i < r; i++) {
-        // 受信データをそのままシリアルに出力
-        if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-          Serial.write(buf[i]);
-          xSemaphoreGive(serialMutex);
-        }
+      // データは buf に蓄積される（len が増加）
+      // 出力は後でまとめて行う
+    }
+
+    // ここでは受信バイナリをそのままシリアルに出力する（生のバイト列）
+    if (len > 0) {
+      if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        Serial.write(buf, len);
+        xSemaphoreGive(serialMutex);
       }
     }
 
     uint8_t status = 1;
-    // if (len == packetSize) {
-    //   status = 0;
-    // } else {
-    //   status = 1;
-    // }
     // read optional status override from Serial if available
     if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(5)) == pdTRUE) {
       if (Serial.available() > 0) {
@@ -218,8 +225,6 @@ static void ultrasonicTask(void* pvParameters) {
       }
     }
 
-  // measurement interval
-  vTaskDelay(pdMS_TO_TICKS(ULTRASONIC_INTERVAL_MS));
   }
 }
 
