@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "Wifi_SoftAP.hpp"
+#include "LED.hpp"
 
 #if defined(ARDUINO_ARCH_ESP32)
 #include <freertos/FreeRTOS.h>
@@ -12,6 +13,7 @@ static void transmitTask(void* pvParameters);
 static void wifiReceiveTask(void* pvParameters);
 static void uartReceiveTask(void* pvParameters);
 static void ultrasonicTask(void* pvParameters);
+static void ledTask(void* pvParameters);
 
 // --- タイミング設定 (ミリ秒) ---
 #define ULTRASONIC_MEASURE_WAIT_MS 65 // センサーの測定待機時間
@@ -43,17 +45,22 @@ void setup() {
 
   WifiSoftAP::Setup();
   Wire.begin();
+  setupLED(); // LED初期化
 
   // --- タスクの作成とコアへの割り当て ---
   // Core 1: センサー測定タスク (他から独立して動作)
-  xTaskCreatePinnedToCore(ultrasonicTask, "UltraTask", 2048, NULL, 1, NULL, 1);
-  
+  xTaskCreatePinnedToCore(ultrasonicTask, "UltraTask", 2048, NULL, 2, NULL, 1);
+  // LEDタスクを作成（低優先度）
+  xTaskCreatePinnedToCore(ledTask, "LEDTask", 2048, NULL, 1, NULL, 1);
+
   // Core 0: 通信関連タスク
   // 優先度: WiFi受信 (3) > UART受信 (2) > 送信 (1)
   // これにより、パケット到着時に受信タスクが送信タスクよりも優先して実行される
   xTaskCreatePinnedToCore(wifiReceiveTask, "WiFiRxTask", 4096, NULL, 3, NULL, 0); // 最優先
   xTaskCreatePinnedToCore(uartReceiveTask, "UartRxTask", 2048, NULL, 2, NULL, 0); // 中優先
   xTaskCreatePinnedToCore(transmitTask,    "TxTask",    4096, NULL, 1, NULL, 0); // 低優先
+  
+  
 }
 
 void loop() {
@@ -180,6 +187,16 @@ static void ultrasonicTask(void* pvParameters) {
       ultrasonicValue = (uint8_t)reading;
     }
     vTaskDelay(pdMS_TO_TICKS(ULTRASONIC_INTERVAL_MS));
+  }
+}
+
+/**
+ * @brief LEDの点滅制御を行うタスク
+ */
+static void ledTask(void* pvParameters) {
+  (void)pvParameters;
+  for (;;) {
+    loopLED(); // LED点滅処理を実行
   }
 }
 
