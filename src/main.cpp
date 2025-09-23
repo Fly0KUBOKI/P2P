@@ -17,9 +17,9 @@ static void ledTask(void* pvParameters);
 static void wifiHealthTask(void* pvParameters);
 
 // --- タイミング設定 (ミリ秒) ---
-#define ULTRASONIC_MEASURE_WAIT_MS 65 // センサーの測定待機時間
-#define ULTRASONIC_INTERVAL_MS 0   // センサーの測定周期
-#define TRANSMIT_Hz 50     // 送信タスクの実行周期 (50Hz)
+#define ULTRASONIC_MEASURE_WAIT_MS 70 // センサーの測定待機時間
+#define ULTRASONIC_INTERVAL_MS 10   // センサーの測定周期
+#define TRANSMIT_Hz 25     // 送信タスクの実行周期 (25Hz)
 
 // --- GPIO設定 ---
 #define WIFI_STATUS_LED_PIN 2  // WiFi接続状態表示用LED
@@ -31,6 +31,8 @@ static SemaphoreHandle_t udpMutex = NULL;
 // --- タスク間通信用の共有リソース ---
 // 超音波センサーの値
 static volatile uint8_t ultrasonicValue = 0;
+// ステータス値（Serial1から受信したデータで更新）
+static volatile uint8_t status = 1;
 // WiFi受信フラグ
 static volatile bool wifiReceivedFlag = false;
 // UART受信フラグ
@@ -39,9 +41,13 @@ static volatile bool uartReceivedFlag = false;
 static IPAddress remoteClientIP;
 static uint16_t remoteClientPort;
 
+#define PIN_TX1 16
+#define PIN_RX1 17
+
 
 void setup() {
-  Serial.begin(921600);
+  Serial.begin(115200);
+  Serial1.begin(115200, SERIAL_8N1, PIN_RX1, PIN_TX1);
   while (!Serial) { delay(10); }
 
   serialMutex = xSemaphoreCreateMutex();
@@ -50,6 +56,9 @@ void setup() {
   // GPIO2をWiFi状態表示LED用に初期化
   pinMode(WIFI_STATUS_LED_PIN, OUTPUT);
   digitalWrite(WIFI_STATUS_LED_PIN, LOW); // 初期状態：消灯
+
+
+  
 
   WifiSetting::Setup();
   
@@ -70,10 +79,10 @@ void setup() {
   // Core 0: 通信関連タスク
   // 優先度: WiFi受信 (3) > UART受信 (2) > 送信 (1) > WiFiヘルスチェック (0)
   // これにより、パケット到着時に受信タスクが送信タスクよりも優先して実行される
-  xTaskCreatePinnedToCore(wifiReceiveTask, "WiFiRxTask", 4096, NULL, 3, NULL, 0); // 最優先
-  xTaskCreatePinnedToCore(uartReceiveTask, "UartRxTask", 2048, NULL, 2, NULL, 0); // 中優先
-  xTaskCreatePinnedToCore(transmitTask,    "TxTask",    4096, NULL, 1, NULL, 0); // 低優先
-  xTaskCreatePinnedToCore(wifiHealthTask,  "HealthTask", 2048, NULL, 0, NULL, 0); // 最低優先
+  xTaskCreatePinnedToCore(wifiReceiveTask, "WiFiRxTask", 4096, NULL, 4, NULL, 0); // 最優先
+  xTaskCreatePinnedToCore(transmitTask,    "TxTask",     4096, NULL, 3, NULL, 0); // 中優先
+  xTaskCreatePinnedToCore(uartReceiveTask, "UartRxTask", 2048, NULL, 2, NULL, 0); // 低優先
+  xTaskCreatePinnedToCore(wifiHealthTask,  "HealthTask", 2048, NULL, 1, NULL, 0); // 最低優先
   
   
 }
@@ -98,7 +107,7 @@ static void transmitTask(void* pvParameters) {
 
     // --- 1. 定期的なブロードキャスト送信 ---
     if (udpMutex && xSemaphoreTake(udpMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-      uint8_t broadcastPkt[2] = { 1, ultrasonicValue }; // Status 1: 定期送信
+      uint8_t broadcastPkt[2] = { status, ultrasonicValue }; // Status: Serial1から受信した値
       WifiSetting::udp.beginPacket(WifiSetting::broadcastIP, WifiSetting::udpPort);
       WifiSetting::udp.write(broadcastPkt, 2);
       WifiSetting::udp.endPacket();
@@ -109,7 +118,7 @@ static void transmitTask(void* pvParameters) {
     if (wifiReceivedFlag) {
       wifiReceivedFlag = false; // すぐにフラグをリセット
       if (udpMutex && xSemaphoreTake(udpMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        uint8_t replyPkt[2] = { 0, ultrasonicValue }; // Status 0: 応答
+        uint8_t replyPkt[2] = { status, ultrasonicValue }; // Status: Serial1から受信した値
         WifiSetting::udp.beginPacket(remoteClientIP, remoteClientPort);
         WifiSetting::udp.write(replyPkt, 2);
         WifiSetting::udp.endPacket();
@@ -121,7 +130,6 @@ static void transmitTask(void* pvParameters) {
     if (uartReceivedFlag) {
       uartReceivedFlag = false; // すぐにフラグをリセット
       if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        Serial.println("UART-IN"); // UART受信時の処理をここに記述
         xSemaphoreGive(serialMutex);
       }
     }
@@ -147,7 +155,8 @@ static void wifiReceiveTask(void* pvParameters) {
 
       // 受信データをそのままシリアルに出力
       if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
-        Serial.write(tempBuf, packetSize);
+        Serial.printf("Received %d bytes from %s:%d\n", packetSize, remoteClientIP.toString().c_str(), remoteClientPort);
+        Serial1.write(tempBuf, packetSize);
         xSemaphoreGive(serialMutex);
       }
       // 送信タスクに処理を依頼するためにフラグを立てる
@@ -159,14 +168,25 @@ static void wifiReceiveTask(void* pvParameters) {
 
 /**
  * @brief UART (シリアル) の受信を専門に行うタスク
- * - データを受信したら、フラグを立てる
+ * - Serial1からデータを受信してstatusを更新
  */
 static void uartReceiveTask(void* pvParameters) {
   (void)pvParameters;
   for (;;) {
-    if (Serial.available() > 0) {
-      while(Serial.available() > 0) {
-        Serial.read(); // バッファを空にする
+    status = 1;
+    if (Serial1.available() > 0) {
+      // Serial1から受信したデータでstatusを更新
+      uint8_t receivedData = Serial1.read();
+      status = receivedData; // 受信したデータをstatusに設定
+      
+      if (serialMutex && xSemaphoreTake(serialMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        Serial.printf("UART received status: %d\n", status);
+        xSemaphoreGive(serialMutex);
+      }
+      
+      // 残りのバッファを空にする
+      while(Serial1.available() > 0) {
+        Serial1.read();
       }
       uartReceivedFlag = true;
     }

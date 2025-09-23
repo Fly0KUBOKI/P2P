@@ -7,6 +7,13 @@
 #include <esp32-hal-cpu.h> // for setCpuFrequencyMhz()
 #endif
 
+// --- 静的IPアドレス設定 ---
+IPAddress local_IP(192, 168, 137, 123); // 固定したいIPアドレス
+IPAddress gateway(192, 168, 137, 1);    // ゲートウェイのIPアドレス
+IPAddress subnet(255, 255, 255, 0);   // サブネットマスク
+IPAddress primaryDNS(8, 8, 8, 8);     // (オプション) プライマリDNS
+IPAddress secondaryDNS(8, 8, 4, 4);   // (オプション) セカンダリDNS
+
 namespace WifiSetting {
 
   // UDPオブジェクト
@@ -24,6 +31,11 @@ namespace WifiSetting {
 
   // 設定をもとに Station 接続を初期化
   void Setup(){
+
+      // WiFi.begin() を呼び出す前にIPアドレスを設定します
+    if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
+      Serial.println("STA Failed to configure");
+    }
 
     // 明示的に STA モードに設定
     WiFi.mode(WIFI_STA);
